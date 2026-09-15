@@ -177,7 +177,7 @@ O join funciona. 266 CT-e têm contraparte com valor de frete cadastrado.
 
 ```
 #type.sql#
-SELECT CAB.AD_VALORFRETE FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}')
+SELECT MAX(CAB.AD_VALORFRETE) FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}')
 ```
 
 Os parênteses externos são dispensáveis com a diretiva `#type.sql#` — o Sankhya monta a
@@ -187,6 +187,53 @@ subconsulta no SELECT da tela.
 zero" no mesmo `0,00`, apagando a distinção que importa numa conferência. Em branco significa
 pendente de cadastro; `0,00` significa frete zero cadastrado.
 
+**O `MAX` é obrigatório**, ver seção 6.1.
+
+### 6.1 — `ORA-01427` e a necessidade do `MAX`
+
+A primeira versão do campo usava `SELECT CAB.AD_VALORFRETE` sem agregação. Funcionou nos testes,
+mas quebrou em produção ao aplicar o filtro de mês anterior na grade:
+
+```
+Erro ao carregar página de dados 1 para ImportacaoXMLNotas.
+ORA-01427: a subconsulta de uma única linha retorna mais de uma linha
+Código: CORE_E00358
+```
+
+Causa: existe `CHAVENFE` repetida na `TGFCAB`. Quando o filtro trouxe CT-e cujas notas caem nesses
+casos duplicados, a subconsulta retornou mais de uma linha e o Oracle abortou a página inteira.
+
+A agregação resolve porque sempre devolve exatamente uma linha, e continua retornando nulo quando
+não há correspondência — o comportamento "em branco = sem cotação" fica preservado.
+
+**Lição geral: subconsulta escalar em campo calculado sempre com função de agregação.** Mesmo
+quando a chave parece única, basta um caso duplicado em qualquer registro da página para derrubar
+a tela toda. O erro não aparece no registro problemático — aparece no carregamento inteiro.
+
+Consultas para investigar as duplicidades:
+
+```sql
+-- Chaves repetidas
+SELECT CHAVENFE, COUNT(*) AS QTD
+  FROM TGFCAB
+ WHERE CHAVENFE IS NOT NULL
+ GROUP BY CHAVENFE
+HAVING COUNT(*) > 1
+ ORDER BY QTD DESC
+ FETCH FIRST 20 ROWS ONLY;
+
+-- Detalhe de um caso
+SELECT NUNOTA, NUMNOTA, SERIENOTA, CODTIPOPER, DTNEG,
+       STATUSNOTA, AD_VALORFRETE, VLRNOTA
+  FROM TGFCAB
+ WHERE CHAVENFE = '<chave>';
+```
+
+Hipóteses prováveis: pedido e nota compartilhando a chave, ou nota cancelada convivendo com a
+válida. **Se os valores de `AD_VALORFRETE` divergirem entre as linhas duplicadas, o `MAX` está
+escolhendo arbitrariamente** e a expressão precisa de critério — filtro por `CODTIPOPER` ou
+descarte de canceladas via `STATUSNOTA`. Pendente de verificação.
+
 ### Referência — coluna de diferença (não implementada)
 
 Caso futuramente se queira a comparação já calculada na grade, o valor do CT-e está na própria
@@ -194,7 +241,7 @@ Caso futuramente se queira a comparação já calculada na grade, o valor do CT-
 
 ```
 #type.sql#
-SELECT CAB.AD_VALORFRETE - TGFIXN.VLRNOTA FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}')
+SELECT MAX(CAB.AD_VALORFRETE) - TGFIXN.VLRNOTA FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}')
 ```
 
 Positivo = transportadora cobrou menos que o previsto. Negativo = cobrou mais. Dobra o custo de
@@ -315,6 +362,15 @@ texto puro — o que explicava todos os joins vazios.
 
 `SERIENOTA` é VARCHAR, não número. A base contém séries `-`, `U`, `*` além dos numéricos. Filtrar
 com `SERIENOTA = 3` retorna vazio; o correto é `SERIENOTA = '3'`.
+
+### Testar com filtros reais, não só com amostra
+
+O campo passou em todos os testes de banco e só quebrou quando o operador aplicou o filtro de mês
+anterior na grade (`ORA-01427`, seção 6.1). Uma chave duplicada em qualquer registro da página
+derruba o carregamento inteiro, e amostras pequenas dificilmente pegam esse caso.
+
+Antes de considerar entregue: abrir a tela com os filtros que o usuário realmente usa — período
+cheio, sem filtro, ordenações diferentes.
 
 ---
 
