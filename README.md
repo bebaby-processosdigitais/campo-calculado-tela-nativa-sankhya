@@ -21,11 +21,11 @@ valor da `TGFCAB` para dentro da grade da `TGFIXN`.
 
 ## 2. Onde se cria o campo
 
-**Dicionário de Dados**, não Construtor de Telas.
+**Dicionário de Dados.**
 
-Esse é o ponto que mais custou tempo. Para telas nativas do Sankhya, campos personalizados e
-calculados são cadastrados no **Dicionário de Dados**, localizando a instância pelo nome da
-tabela. O Construtor de Telas serve para layout e comportamento, não para criar o campo.
+Telas nativas do Sankhya têm seus campos personalizados e calculados cadastrados no Dicionário de
+Dados, localizando a instância pelo nome da tabela. O Construtor de Telas serve para layout e
+comportamento de telas customizadas, não para criar campo em tela nativa.
 
 Caminho: Dicionário de Dados → instância `ImportacaoXMLNotas` (tabela `TGFIXN`) → aba Campos →
 Novo.
@@ -34,16 +34,17 @@ Configuração do campo:
 
 | Propriedade | Valor |
 |---|---|
-| Nome do campo | `AD_FRETECAB` |
-| Descrição | Frete Cabeçalho |
+| Nome do campo | `AD_VLRFRETECAB` |
+| Descrição | Cot. Frete |
 | Tipo de dados | Número Decimal |
 | Apresentação | Padrão |
 | Permite pesquisa | Não |
-| Visível no grid de pesquisa | Não |
+| Visível no grid de pesquisa | Sim |
 | Campo calculado | **Sim** |
 
-`Permite pesquisa` deve ficar desligado: com ele ativo o Sankhya tenta usar a subconsulta em
-cláusula de filtro, o que causa erro ou lentidão severa na tela de busca.
+`Permite pesquisa` fica desligado: com ele ativo o Sankhya tenta usar a subconsulta em cláusula de
+filtro, o que causa erro ou lentidão severa na tela de busca. `Visível no grid de pesquisa` ligado
+apenas exibe a coluna no resultado, sem torná-la filtrável — é seguro.
 
 ---
 
@@ -68,7 +69,7 @@ segunda linha o conteúdo é tratado como SQL bruto e entregue ao Oracle:
 
 ```
 #type.sql#
-(SELECT CAB.AD_VALORFRETE FROM TGFCAB CAB WHERE CAB.NUNOTA = TGFIXN.NUNOTA)
+SELECT CAB.AD_VALORFRETE FROM TGFCAB CAB WHERE CAB.NUNOTA = TGFIXN.NUNOTA
 ```
 
 Essa diretiva foi descoberta inspecionando um campo calculado nativo já existente na mesma
@@ -172,25 +173,32 @@ O join funciona. 266 CT-e têm contraparte com valor de frete cadastrado.
 
 ## 6. Solução final
 
-### Campo 1 — `AD_FRETECAB` (Frete Cabeçalho)
+### Campo implementado — `AD_VLRFRETECAB` (Cot. Frete)
 
 ```
 #type.sql#
-(SELECT CAB.AD_VALORFRETE FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}'))
+SELECT CAB.AD_VALORFRETE FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}')
 ```
+
+Os parênteses externos são dispensáveis com a diretiva `#type.sql#` — o Sankhya monta a
+subconsulta no SELECT da tela.
 
 **Sem `NVL` de propósito.** O `NVL(campo, 0)` transforma "não cadastrado" e "cadastrado como
 zero" no mesmo `0,00`, apagando a distinção que importa numa conferência. Em branco significa
 pendente de cadastro; `0,00` significa frete zero cadastrado.
 
-### Campo 2 — `AD_DIFFRETE` (Diferença Frete)
+### Referência — coluna de diferença (não implementada)
+
+Caso futuramente se queira a comparação já calculada na grade, o valor do CT-e está na própria
+`TGFIXN` (`VLRNOTA`):
 
 ```
 #type.sql#
-(SELECT CAB.AD_VALORFRETE - TGFIXN.VLRNOTA FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}'))
+SELECT CAB.AD_VALORFRETE - TGFIXN.VLRNOTA FROM TGFCAB CAB WHERE CAB.CHAVENFE = REGEXP_SUBSTR(DBMS_LOB.SUBSTR(TGFIXN.DOCSREF, 300, 1), '[0-9]{44}')
 ```
 
-Positivo = transportadora cobrou menos que o previsto. Negativo = cobrou mais.
+Positivo = transportadora cobrou menos que o previsto. Negativo = cobrou mais. Dobra o custo de
+leitura de CLOB por linha, ver seção 7.
 
 ### Após salvar
 
@@ -203,7 +211,7 @@ Positivo = transportadora cobrou menos que o previsto. Negativo = cobrou mais.
 ## 7. Desempenho
 
 `DBMS_LOB.SUBSTR` combinado com `REGEXP_SUBSTR` **não usa índice** e roda uma vez por linha
-exibida. Com dois campos, são duas varreminações de CLOB por registro.
+exibida. Cada campo desse tipo adiciona uma leitura de CLOB por registro da grade.
 
 Testar com o portal filtrado num período curto antes de liberar. Abrir a grade sem filtro sobre
 50 mil CT-e trava a tela.
